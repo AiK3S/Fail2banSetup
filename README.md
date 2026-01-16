@@ -158,21 +158,49 @@ rm -rf /etc/fail2ban  # 可选：删除配置
 ---
 ## 快速部署命令
 
-一键创建所有文件：
+### 一键安装（默认配置，22端口）
 
 ```bash
-mkdir -p ~/fail2ban-setup && cd ~/fail2ban-setup
+git clone https://github.com/AiK3S/Fail2banSetup.git && cd Fail2banSetup && chmod +x install.sh && sudo ./install.sh
+```
 
-# 然后分别创建三个文件，粘贴对应内容
-nano install.sh
-nano jail.local.template
-nano README.md
+### 自定义 SSH 端口（修改最后的端口号）
 
-# 添加执行权限
+```bash
+git clone https://github.com/AiK3S/Fail2banSetup.git && cd Fail2banSetup && chmod +x install.sh && sudo ./install.sh -p 22222
+```
+
+### 自定义端口 + 可信 IP
+
+```bash
+git clone https://github.com/AiK3S/Fail2banSetup.git && cd Fail2banSetup && chmod +x install.sh && sudo ./install.sh -p 52222 -t "192.168.1.100 10.0.0.1"
+```
+
+## 分步执行
+```bash
+# 1. 克隆仓库
+git clone https://github.com/AiK3S/Fail2banSetup.git
+
+# 2. 进入目录
+cd Fail2banSetup
+
+# 3. 添加执行权限
 chmod +x install.sh
 
-# 运行（替换成你的端口）
-sudo ./install.sh -p 22222
+# 4. 运行安装脚本
+sudo ./install.sh -p 你的SSH端口
 ```
+
+## 安装后清理（可选）
+```bash
+cd Fail2banSetup && git pull
+```
+
+## 分步执行
+```bash
+cd .. && rm -rf Fail2banSetup
+```
+
+
 
 
