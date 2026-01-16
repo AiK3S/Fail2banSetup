@@ -13,10 +13,12 @@
 - 自动备份现有配置
 
 ## 文件结构
+```
 fail2ban-setup/
 ├── install.sh # 安装脚本
 ├── jail.local.template # 配置模板
 └── README.md # 说明文档
+```
 
 ## 快速开始
 
