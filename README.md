@@ -11,7 +11,12 @@
 - 累犯加重处罚机制 (Recidive)
 - 可选 UFW 防火墙集成
 - 自动备份现有配置
-- 
+
+## 系统要求
+- 操作系统: Debian / Ubuntu
+- 权限: root 或 sudo
+- 依赖: apt, systemd
+
 ## 文件结构
 ```
 fail2ban-setup/
@@ -19,11 +24,6 @@ fail2ban-setup/
 ├── jail.local.template # 配置模板
 └── README.md # 说明文档
 ```
-
-## 系统要求
-- 操作系统: Debian / Ubuntu
-- 权限: root 或 sudo
-- 依赖: apt, systemd
 
 ## 快速部署
 
