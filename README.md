@@ -42,13 +42,13 @@ chmod +x install.sh
 sudo ./install.sh
 
 # 指定 SSH 端口
-sudo ./install.sh -p 52222
+sudo ./install.sh -p 22222
 
 # 指定端口和可信 IP
-sudo ./install.sh -p 52222 -t "192.168.1.100 10.0.0.1"
+sudo ./install.sh -p 22222 -t "192.168.1.100 10.0.0.1"
 
 # 完整配置
-sudo ./install.sh -p 52222 -t "192.168.1.100" -b 2d -m 5 -u
+sudo ./install.sh -p 22222 -t "192.168.1.100" -b 2d -m 5 -u
 ```
 
 ### 命令行参数
@@ -172,7 +172,7 @@ nano README.md
 chmod +x install.sh
 
 # 运行（替换成你的端口）
-sudo ./install.sh -p 52222
+sudo ./install.sh -p 22222
 ```
 
 
