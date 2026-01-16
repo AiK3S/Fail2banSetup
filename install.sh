@@ -15,13 +15,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 打印函数
 print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 检查 root 权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "此脚本需要 root 权限运行"
@@ -30,14 +28,13 @@ check_root() {
     fi
 }
 
-# 显示帮助
 show_help() {
     cat << EOF
 用法: $0 [选项]
 
 选项:
     -p, --port PORT         SSH 端口号 (默认: 22)
-    -t, --trusted-ips IPS   可信 IP 列表，用空格分隔 (可选)
+    -t, --trusted-ips IPS   额外的可信 IP，用空格分隔 (可选)
     -b, --bantime TIME      默认封禁时长 (默认: 1d)
     -f, --findtime TIME     查找时间窗口 (默认: 2m)
     -m, --maxretry NUM      最大重试次数 (默认: 3)
@@ -45,9 +42,8 @@ show_help() {
     -h, --help              显示此帮助信息
 
 示例:
-    $0 -p 22222
-    $0 -p 22222 -t "192.168.1.100 10.0.0.1"
-    $0 -p 22222 -t "192.168.1.100" -b 2d -m 5 -u
+    $0 -p 52222
+    $0 -p 52222 -t "192.168.1.100 10.0.0.1"
 
 EOF
     exit 0
@@ -61,54 +57,39 @@ FINDTIME="2m"
 MAXRETRY="3"
 USE_UFW="false"
 
-# 解析命令行参数
+# 默认忽略的 IP（始终包含）
+DEFAULT_IGNORE_IPS="127.0.0.1/8 ::1"
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -p|--port)
-                SSH_PORT="$2"
-                shift 2
-                ;;
-            -t|--trusted-ips)
-                TRUSTED_IPS="$2"
-                shift 2
-                ;;
-            -b|--bantime)
-                BANTIME="$2"
-                shift 2
-                ;;
-            -f|--findtime)
-                FINDTIME="$2"
-                shift 2
-                ;;
-            -m|--maxretry)
-                MAXRETRY="$2"
-                shift 2
-                ;;
-            -u|--use-ufw)
-                USE_UFW="true"
-                shift
-                ;;
-            -h|--help)
-                show_help
-                ;;
-            *)
-                print_error "未知选项: $1"
-                show_help
-                ;;
+            -p|--port) SSH_PORT="$2"; shift 2 ;;
+            -t|--trusted-ips) TRUSTED_IPS="$2"; shift 2 ;;
+            -b|--bantime) BANTIME="$2"; shift 2 ;;
+            -f|--findtime) FINDTIME="$2"; shift 2 ;;
+            -m|--maxretry) MAXRETRY="$2"; shift 2 ;;
+            -u|--use-ufw) USE_UFW="true"; shift ;;
+            -h|--help) show_help ;;
+            *) print_error "未知选项: $1"; show_help ;;
         esac
     done
 }
 
-# 验证端口号
 validate_port() {
     if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
-        print_error "无效的端口号: $SSH_PORT (必须是 1-65535 之间的数字)"
+        print_error "无效的端口号: $SSH_PORT"
         exit 1
     fi
 }
 
-# 安装 Fail2Ban
+# 构建完整的忽略 IP 列表
+build_ignore_ips() {
+    IGNORE_IPS="$DEFAULT_IGNORE_IPS"
+    if [ -n "$TRUSTED_IPS" ]; then
+        IGNORE_IPS="$IGNORE_IPS $TRUSTED_IPS"
+    fi
+}
+
 install_fail2ban() {
     print_info "更新软件包列表..."
     apt update -y
@@ -119,7 +100,6 @@ install_fail2ban() {
     print_success "Fail2Ban 安装完成"
 }
 
-# 备份现有配置
 backup_config() {
     if [ -f /etc/fail2ban/jail.local ]; then
         BACKUP_FILE="/etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)"
@@ -128,15 +108,8 @@ backup_config() {
     fi
 }
 
-# 生成配置文件
 generate_config() {
     print_info "生成 Fail2Ban 配置文件..."
-
-    # 构建 ignoreip 列表
-    IGNORE_IPS="127.0.0.1/8 ::1"
-    if [ -n "$TRUSTED_IPS" ]; then
-        IGNORE_IPS="$IGNORE_IPS $TRUSTED_IPS"
-    fi
 
     # UFW 配置行
     UFW_LINE="# banaction = ufw"
@@ -144,31 +117,6 @@ generate_config() {
         UFW_LINE="banaction = ufw"
     fi
 
-    # 获取脚本所在目录
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    TEMPLATE_FILE="$SCRIPT_DIR/jail.local.template"
-
-    # 检查模板文件是否存在
-    if [ -f "$TEMPLATE_FILE" ]; then
-        print_info "使用模板文件生成配置..."
-        sed -e "s|{{IGNORE_IPS}}|${IGNORE_IPS}|g" \
-            -e "s|{{BANTIME}}|${BANTIME}|g" \
-            -e "s|{{FINDTIME}}|${FINDTIME}|g" \
-            -e "s|{{MAXRETRY}}|${MAXRETRY}|g" \
-            -e "s|{{UFW_LINE}}|${UFW_LINE}|g" \
-            -e "s|{{SSH_PORT}}|${SSH_PORT}|g" \
-            -e "s|{{GENERATED_TIME}}|$(date '+%Y-%m-%d %H:%M:%S')|g" \
-            "$TEMPLATE_FILE" > /etc/fail2ban/jail.local
-    else
-        print_info "模板文件不存在，使用内置配置..."
-        generate_config_inline
-    fi
-
-    print_success "配置文件已生成: /etc/fail2ban/jail.local"
-}
-
-# 内置配置生成（当模板文件不存在时使用）
-generate_config_inline() {
     cat > /etc/fail2ban/jail.local << EOF
 # ============================================================================
 # Fail2Ban 本地配置文件
@@ -176,13 +124,27 @@ generate_config_inline() {
 # ============================================================================
 
 [DEFAULT]
+# 忽略的 IP 地址（永不封禁）
 ignoreip = ${IGNORE_IPS}
+
+# 默认封禁时长
 bantime = ${BANTIME}
+
+# 查找时间窗口
 findtime = ${FINDTIME}
+
+# 最大重试次数
 maxretry = ${MAXRETRY}
+
+# 封禁动作
 action = %(action_)s[name=%(__name__)s, port="%(port)s"]
+
+# UFW 集成
 ${UFW_LINE}
 
+# =============================================================================
+# SSH 保护
+# =============================================================================
 [sshd]
 enabled  = true
 port     = ${SSH_PORT}
@@ -191,6 +153,9 @@ mode     = aggressive
 maxretry = 3
 bantime  = 1w
 
+# =============================================================================
+# 累犯加重处罚
+# =============================================================================
 [recidive]
 enabled  = true
 backend  = systemd
@@ -199,35 +164,26 @@ findtime = 1d
 maxretry = 3
 bantime  = 2w
 EOF
+
+    print_success "配置文件已生成: /etc/fail2ban/jail.local"
 }
 
-# 启动服务
 start_service() {
     print_info "启动 Fail2Ban 服务..."
     systemctl restart fail2ban
-
-    print_info "设置开机自启..."
     systemctl enable fail2ban
-
     print_success "Fail2Ban 服务已启动"
 }
 
-# 显示状态
 show_status() {
     echo ""
-    print_info "========== Fail2Ban 状态 =========="
+    print_info "========== 服务状态 =========="
     systemctl status fail2ban --no-pager || true
-    
-    echo ""
-    print_info "========== 监狱状态 =========="
-    fail2ban-client status || true
-    
     echo ""
     print_info "========== SSH 封锁情况 =========="
     fail2ban-client status sshd || true
 }
 
-# 显示摘要
 show_summary() {
     echo ""
     echo "=============================================="
@@ -237,20 +193,18 @@ show_summary() {
     echo "配置摘要:"
     echo "  - SSH 端口: ${SSH_PORT}"
     echo "  - 可信 IP: ${IGNORE_IPS}"
-    echo "  - 默认封禁时长: ${BANTIME}"
-    echo "  - 查找时间窗口: ${FINDTIME}"
-    echo "  - 最大重试次数: ${MAXRETRY}"
+    echo "  - 封禁时长: ${BANTIME}"
+    echo "  - 时间窗口: ${FINDTIME}"
+    echo "  - 重试次数: ${MAXRETRY}"
     echo "  - UFW 集成: ${USE_UFW}"
     echo ""
     echo "常用命令:"
-    echo "  查看状态:       systemctl status fail2ban"
-    echo "  查看封锁:       fail2ban-client status sshd"
-    echo "  解封 IP:        fail2ban-client set sshd unbanip <IP>"
-    echo "  封禁 IP:        fail2ban-client set sshd banip <IP>"
+    echo "  查看状态:  fail2ban-client status sshd"
+    echo "  解封 IP:   fail2ban-client set sshd unbanip <IP>"
+    echo "  封禁 IP:   fail2ban-client set sshd banip <IP>"
     echo ""
 }
 
-# 主函数
 main() {
     echo ""
     echo "=============================================="
@@ -261,16 +215,16 @@ main() {
     check_root
     parse_args "$@"
     validate_port
+    build_ignore_ips
 
     print_info "配置预览:"
     echo "  - SSH 端口: ${SSH_PORT}"
-    echo "  - 可信 IP: ${TRUSTED_IPS:-无}"
+    echo "  - 可信 IP: ${IGNORE_IPS}"
     echo "  - 封禁时长: ${BANTIME}"
     echo ""
 
-    read -p "是否继续安装? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
+    read -p "是否继续安装? [Y/n] (回车默认Y): " -r CONFIRM
+    if [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
         print_warning "安装已取消"
         exit 0
     fi
