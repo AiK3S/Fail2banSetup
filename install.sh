@@ -282,6 +282,7 @@ f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
 【白名单管理】
   f2b whitelist <IP>              将 IP 加入白名单（永不封禁）
   f2b unwhitelist <IP>            将 IP 从白名单移除
+  (也可用 f2b ignore / f2b unignore 别名)
 
 【更新管理】
   f2b update                       检查并更新到最新版本
@@ -308,6 +309,10 @@ fi
 
 # 白名单管理: 添加可信 IP 到 ignoreip
 if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
+    if [ $EUID -ne 0 ]; then
+        echo "f2b: 白名单管理需要 root 权限" >&2
+        exit 1
+    fi
     IP="$2"
     if [ -z "$IP" ]; then
         echo "用法: f2b whitelist <IP>    示例: f2b whitelist 192.168.1.100" >&2
@@ -321,14 +326,21 @@ if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
         echo "f2b: ${IP} 已在白名单中"
         exit 0
     fi
-    sed -i "/^ignoreip =/ s/$/ ${IP}/" /etc/fail2ban/jail.local
-    fail2ban-client reload 2>&1
+    sed -i "/^ignoreip =/ s|$| ${IP}|" /etc/fail2ban/jail.local
+    if ! fail2ban-client reload 2>&1; then
+        echo "f2b: reload 失败，IP 已写入配置但未生效，请检查" >&2
+        exit 1
+    fi
     echo "f2b: 已将 ${IP} 加入白名单"
     exit 0
 fi
 
 # 白名单管理: 移除可信 IP
 if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
+    if [ $EUID -ne 0 ]; then
+        echo "f2b: 白名单管理需要 root 权限" >&2
+        exit 1
+    fi
     IP="$2"
     if [ -z "$IP" ]; then
         echo "用法: f2b unwhitelist <IP>  示例: f2b unwhitelist 192.168.1.100" >&2
@@ -342,14 +354,21 @@ if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
         echo "f2b: ${IP} 不在白名单中"
         exit 0
     fi
-    sed -i "/^ignoreip =/ s/ ${IP}//" /etc/fail2ban/jail.local
-    fail2ban-client reload 2>&1
+    sed -i "/^ignoreip =/ s| ${IP}||" /etc/fail2ban/jail.local
+    if ! fail2ban-client reload 2>&1; then
+        echo "f2b: reload 失败，配置已修改但未生效，请检查" >&2
+        exit 1
+    fi
     echo "f2b: 已将 ${IP} 从白名单移除"
     exit 0
 fi
 
 # 更新管理: 检查远程仓库并自动更新
 if [ "$1" = "update" ]; then
+    if [ $EUID -ne 0 ]; then
+        echo "f2b: 更新需要 root 权限" >&2
+        exit 1
+    fi
     if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR" ]; then
         echo "f2b: 未找到源码仓库路径，无法自动更新" >&2
         echo "请手动进入仓库目录执行: git pull && sudo ./install.sh" >&2
@@ -388,7 +407,10 @@ if [ "$1" = "update" ]; then
     if [ -n "$INSTALL_ARGS" ]; then
         echo "f2b: 使用上次的安装参数: $INSTALL_ARGS"
     fi
-    bash ./install.sh $INSTALL_ARGS
+    if ! eval "bash ./install.sh $INSTALL_ARGS"; then
+        echo "f2b: 重新安装失败，请检查错误信息" >&2
+        exit 1
+    fi
     exit 0
 fi
 
@@ -547,7 +569,7 @@ main() {
     check_os
 
     # 保存原始参数供 f2b update 使用
-    SAVED_ARGS="$*"
+    SAVED_ARGS=$(printf '%q ' "$@")
 
     parse_args "$@"
     validate_port
