@@ -398,7 +398,13 @@ if [ "$1" = "update" ]; then
         exit 0
     fi
     echo "f2b: 发现新版本，正在拉取代码..."
-    git pull origin main 2>&1 || git pull origin master 2>&1
+    if ! git pull origin main 2>&1; then
+        if ! git pull origin master 2>&1; then
+            echo "f2b: 拉取代码失败，可能有本地修改冲突" >&2
+            echo "请手动执行: cd \"$REPO_DIR\" && git checkout -- install.sh && sudo f2b update" >&2
+            exit 1
+        fi
+    fi
     echo "f2b: 代码已更新，正在重新安装..."
     INSTALL_ARGS=""
     if [ -f /etc/fail2ban/f2b.install_args ]; then
