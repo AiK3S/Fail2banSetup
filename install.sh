@@ -243,12 +243,21 @@ setup_f2b_alias() {
         rm -f "$f2b_path"
     fi
 
-    # 使用引号 delimiter 写入脚本，不做变量展开
-    cat > "$f2b_path" << 'F2B_SCRIPT'
+    # 获取脚本所在目录（源码仓库路径），用于 f2b update
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # 写入脚本头部（含仓库路径，需要变量展开）
+    cat > "$f2b_path" << F2B_HEADER
 #!/bin/bash
 # f2b - fail2ban-client 快捷封装
 # 无参数调用时显示简介与命令列表，否则透传给 fail2ban-client
+# 源码仓库路径（由 install.sh 写入，供 f2b update 使用）
+REPO_DIR="${script_dir}"
+F2B_HEADER
 
+    # 写入脚本主体（引号 delimiter，不做变量展开）
+    cat >> "$f2b_path" << 'F2B_SCRIPT'
 if [ $# -eq 0 ]; then
     cat << 'F2B_HELP'
 f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
@@ -273,6 +282,9 @@ f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
 【白名单管理】
   f2b whitelist <IP>              将 IP 加入白名单（永不封禁）
   f2b unwhitelist <IP>            将 IP 从白名单移除
+
+【更新管理】
+  f2b update                       检查并更新到最新版本
 
 【配置管理】
   f2b -t                            校验配置语法（改配置后建议先跑）
@@ -333,6 +345,50 @@ if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
     sed -i "/^ignoreip =/ s/ ${IP}//" /etc/fail2ban/jail.local
     fail2ban-client reload 2>&1
     echo "f2b: 已将 ${IP} 从白名单移除"
+    exit 0
+fi
+
+# 更新管理: 检查远程仓库并自动更新
+if [ "$1" = "update" ]; then
+    if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR" ]; then
+        echo "f2b: 未找到源码仓库路径，无法自动更新" >&2
+        echo "请手动进入仓库目录执行: git pull && sudo ./install.sh" >&2
+        exit 1
+    fi
+    if ! command -v git &> /dev/null; then
+        echo "f2b: git 未安装，请先安装: apt install git" >&2
+        exit 1
+    fi
+    cd "$REPO_DIR" || { echo "f2b: 无法进入仓库目录 $REPO_DIR" >&2; exit 1; }
+    echo "f2b: 正在检查更新..."
+    if ! git fetch origin 2>&1; then
+        echo "f2b: 无法连接远程仓库，请检查网络" >&2
+        exit 1
+    fi
+    LOCAL=$(git rev-parse HEAD)
+    REMOTE=$(git rev-parse origin/main 2>/dev/null)
+    if [ -z "$REMOTE" ]; then
+        REMOTE=$(git rev-parse origin/master 2>/dev/null)
+    fi
+    if [ -z "$REMOTE" ]; then
+        echo "f2b: 无法获取远程分支信息" >&2
+        exit 1
+    fi
+    if [ "$LOCAL" = "$REMOTE" ]; then
+        echo "f2b: 已经是最新版"
+        exit 0
+    fi
+    echo "f2b: 发现新版本，正在拉取代码..."
+    git pull origin main 2>&1 || git pull origin master 2>&1
+    echo "f2b: 代码已更新，正在重新安装..."
+    INSTALL_ARGS=""
+    if [ -f /etc/fail2ban/f2b.install_args ]; then
+        INSTALL_ARGS=$(cat /etc/fail2ban/f2b.install_args)
+    fi
+    if [ -n "$INSTALL_ARGS" ]; then
+        echo "f2b: 使用上次的安装参数: $INSTALL_ARGS"
+    fi
+    bash ./install.sh $INSTALL_ARGS
     exit 0
 fi
 
@@ -472,6 +528,7 @@ show_summary() {
   加入白名单:    f2b whitelist <IP>
   移除白名单:    f2b unwhitelist <IP>"
     echo "  查看封禁列表:  f2b get sshd banned"
+    echo "  检查更新:      f2b update"
     echo ""
 }
 
@@ -488,6 +545,10 @@ main() {
 
     check_root
     check_os
+
+    # 保存原始参数供 f2b update 使用
+    SAVED_ARGS="$*"
+
     parse_args "$@"
     validate_port
     validate_time "封禁时长" "$BANTIME"
@@ -512,6 +573,10 @@ main() {
 
     install_fail2ban
     setup_f2b_alias
+
+    # 保存安装参数供 f2b update 使用
+    printf '%s\n' "$SAVED_ARGS" > /etc/fail2ban/f2b.install_args
+
     backup_config
     generate_config
     validate_config

@@ -179,10 +179,8 @@ journalctl -u fail2ban -n 50
 # 解封 IP
 f2b set sshd unbanip <你的IP>
 
-# 将 IP 加入白名单
-# 编辑 /etc/fail2ban/jail.local 的 ignoreip 行
-# 然后重启服务
-systemctl restart fail2ban
+# 将 IP 加入白名单（自动 reload，无需手动改配置）
+f2b whitelist <你的IP>
 ```
 
 ### 卸载
@@ -194,11 +192,31 @@ rm -f /usr/local/bin/f2b        # 删除快捷命令
 rm -rf /etc/fail2ban            # 可选：删除配置
 ```
 
-## 更新与清理
-```bash
-# 更新脚本
-cd Fail2banSetup && git pull
+## 更新
 
-# 安装后清理（可选）
+### 一键更新（推荐）
+
+安装后可直接使用快捷命令检查并更新到最新版本：
+
+```bash
+sudo f2b update
+```
+
+该命令会自动：
+1. 检查 GitHub 远程仓库是否有新版本
+2. 无更新时提示"已经是最新版"
+3. 有更新时自动拉取代码，并使用上次的安装参数重新安装
+
+### 手动更新
+
+```bash
+cd Fail2banSetup
+git pull
+sudo ./install.sh    # 加上之前的参数，如 -p 22222 -t "192.168.1.100"
+```
+
+### 安装后清理（可选）
+
+```bash
 cd .. && rm -rf Fail2banSetup
 ```
