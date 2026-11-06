@@ -139,6 +139,19 @@ f2b set sshd unbanip 192.168.1.50
 f2b get sshd banned
 ```
 
+### 白名单管理
+```bash
+# 将 IP 加入白名单（永不封禁，自动 reload）
+f2b whitelist 192.168.1.100
+
+# 将 IP 从白名单移除（自动 reload）
+f2b unwhitelist 192.168.1.100
+
+# 也可以用 ignore / unignore 别名
+f2b ignore 10.0.0.1
+f2b unignore 10.0.0.1
+```
+
 ### 日志查看
 ```bash
 # 实时查看日志

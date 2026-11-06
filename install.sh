@@ -270,6 +270,10 @@ f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
   f2b set recidive banip <IP>       手动封禁 IP（累犯监狱，封所有端口）
   f2b set recidive unbanip <IP>     手动解封 IP（累犯监狱）
 
+【白名单管理】
+  f2b whitelist <IP>              将 IP 加入白名单（永不封禁）
+  f2b unwhitelist <IP>            将 IP 从白名单移除
+
 【配置管理】
   f2b -t                            校验配置语法（改配置后建议先跑）
   f2b reload                        重新加载配置（修改 jail.local 后执行）
@@ -287,13 +291,58 @@ f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
   grep "Ban" /var/log/fail2ban.log          查看封禁记录
   grep "Unban" /var/log/fail2ban.log        查看解封记录
 F2B_HELP
-else
-    if ! command -v fail2ban-client &> /dev/null; then
-        echo "f2b: fail2ban-client 未找到，请确认 Fail2Ban 已安装" >&2
+    exit 0
+fi
+
+# 白名单管理: 添加可信 IP 到 ignoreip
+if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
+    IP="$2"
+    if [ -z "$IP" ]; then
+        echo "用法: f2b whitelist <IP>    示例: f2b whitelist 192.168.1.100" >&2
         exit 1
     fi
-    exec fail2ban-client "$@"
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+        echo "f2b: 配置文件 /etc/fail2ban/jail.local 不存在" >&2
+        exit 1
+    fi
+    if grep "^ignoreip =" /etc/fail2ban/jail.local | tr -s ' ' '\n' | grep -qFx "$IP"; then
+        echo "f2b: ${IP} 已在白名单中"
+        exit 0
+    fi
+    sed -i "/^ignoreip =/ s/$/ ${IP}/" /etc/fail2ban/jail.local
+    fail2ban-client reload 2>&1
+    echo "f2b: 已将 ${IP} 加入白名单"
+    exit 0
 fi
+
+# 白名单管理: 移除可信 IP
+if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
+    IP="$2"
+    if [ -z "$IP" ]; then
+        echo "用法: f2b unwhitelist <IP>  示例: f2b unwhitelist 192.168.1.100" >&2
+        exit 1
+    fi
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+        echo "f2b: 配置文件 /etc/fail2ban/jail.local 不存在" >&2
+        exit 1
+    fi
+    if ! grep "^ignoreip =" /etc/fail2ban/jail.local | tr -s ' ' '\n' | grep -qFx "$IP"; then
+        echo "f2b: ${IP} 不在白名单中"
+        exit 0
+    fi
+    sed -i "/^ignoreip =/ s/ ${IP}//" /etc/fail2ban/jail.local
+    fail2ban-client reload 2>&1
+    echo "f2b: 已将 ${IP} 从白名单移除"
+    exit 0
+fi
+
+# 透传给 fail2ban-client
+if ! command -v fail2ban-client &> /dev/null; then
+    echo "f2b: fail2ban-client 未找到，请确认 Fail2Ban 已安装" >&2
+    exit 1
+fi
+exec fail2ban-client "$@"
+
 F2B_SCRIPT
 
     chmod +x "$f2b_path"
@@ -419,7 +468,9 @@ show_summary() {
     echo "  查看状态:      f2b status"
     echo "  查看 SSH:      f2b status sshd"
     echo "  封禁 IP:       f2b set sshd banip <IP>"
-    echo "  解封 IP:       f2b set sshd unbanip <IP>"
+    echo "  解封 IP:       f2b set sshd unbanip <IP>
+  加入白名单:    f2b whitelist <IP>
+  移除白名单:    f2b unwhitelist <IP>"
     echo "  查看封禁列表:  f2b get sshd banned"
     echo ""
 }
