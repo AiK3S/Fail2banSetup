@@ -1,5 +1,5 @@
 # ============================================================================
-# Fail2Ban 本地配置文件
+# Fail2Ban 本地配置文件（模板 — 供参考，实际由 install.sh 生成）
 # 作者: AiKeS
 # 生成时间: {{GENERATED_TIME}}
 # ============================================================================
@@ -22,6 +22,7 @@ findtime = {{FINDTIME}}
 maxretry = {{MAXRETRY}}
 
 # 触发封禁时执行的动作
+# 如需邮件通知，可改为 action_mwl
 action = %(action_)s[name=%(__name__)s, port="%(port)s"]
 
 # UFW 集成配置
@@ -34,39 +35,20 @@ action = %(action_)s[name=%(__name__)s, port="%(port)s"]
 
 # --- SSH 保护 ---
 [sshd]
-# 是否启用此监狱
 enabled  = true
-
-# SSH 服务的端口号
 port     = {{SSH_PORT}}
-
-# 使用 systemd 作为后端
 backend  = systemd
-
-# 使用激进模式，检测更多类型的攻击
 mode     = aggressive
-
-# SSH 是核心服务，策略更严格，3次失败就封禁
 maxretry = 3
-
-# 对于攻击 SSH 的 IP，封禁 1 周
 bantime  = 1w
-
 
 # --- 累犯加重处罚 (Recidive) ---
 # 监控 Fail2ban 自己的日志，惩罚短时间内被多次封禁的"惯犯" IP
 [recidive]
 enabled  = true
-backend  = systemd
-
-# 封禁所有端口
+backend  = auto
+logpath  = /var/log/fail2ban.log
 action   = %(banaction_allports)s
-
-# 时间窗口为 1 天
 findtime = 1d
-
-# 1 天内被封禁 3 次
 maxretry = 3
-
-# 处以 2 周封禁
 bantime  = 2w

@@ -11,6 +11,7 @@
 - 累犯加重处罚机制 (Recidive)
 - 可选 UFW 防火墙集成
 - 自动备份现有配置
+- f2b 快捷命令（替代 fail2ban-client，输入 f2b 即可查看所有命令用法）
 
 ## 系统要求
 - 操作系统: Debian / Ubuntu
@@ -90,6 +91,19 @@ sudo ./install.sh -p 你的SSH端口
 | sshd | 1 周 | 3 次 | 2 分钟 |
 | recidive | 2 周 | 3 次 | 1 天 |
 
+## f2b 快捷命令
+
+安装脚本会自动在 `/usr/local/bin/f2b` 创建封装脚本，替代冗长的 `fail2ban-client`。
+
+- **直接输入 `f2b`**：显示简介和所有命令的示例与用法
+- **输入 `f2b` + 参数**：直接转发给 `fail2ban-client`，用法完全一致
+- 在交互终端、脚本、cron 中均可使用
+
+```bash
+# 直接输入 f2b 查看所有命令
+f2b
+```
+
 ## 常用管理命令
 
 ### 服务管理
@@ -110,19 +124,19 @@ systemctl disable fail2ban
 ### 封禁管理
 ```bash
 # 查看所有监狱状态
-fail2ban-client status
+f2b status
 
 # 查看 SSH 监狱详情
-fail2ban-client status sshd
+f2b status sshd
 
 # 手动封禁 IP
-fail2ban-client set sshd banip 192.168.1.50
+f2b set sshd banip 192.168.1.50
 
 # 手动解封 IP
-fail2ban-client set sshd unbanip 192.168.1.50
+f2b set sshd unbanip 192.168.1.50
 
 # 查看被封禁的 IP
-fail2ban-client get sshd banned
+f2b get sshd banned
 ```
 
 ### 日志查看
@@ -141,7 +155,7 @@ grep "Unban" /var/log/fail2ban.log | tail -20
 ### 服务启动失败
 ```bash
 # 检查配置语法
-fail2ban-client -t
+f2b -t
 
 # 查看错误日志
 journalctl -u fail2ban -n 50
@@ -150,7 +164,7 @@ journalctl -u fail2ban -n 50
 ### 误封自己的 IP
 ```bash
 # 解封 IP
-fail2ban-client set sshd unbanip <你的IP>
+f2b set sshd unbanip <你的IP>
 
 # 将 IP 加入白名单
 # 编辑 /etc/fail2ban/jail.local 的 ignoreip 行
@@ -163,7 +177,8 @@ systemctl restart fail2ban
 systemctl stop fail2ban
 systemctl disable fail2ban
 apt remove --purge fail2ban
-rm -rf /etc/fail2ban  # 可选：删除配置
+rm -f /usr/local/bin/f2b        # 删除快捷命令
+rm -rf /etc/fail2ban            # 可选：删除配置
 ```
 
 ## 更新与清理
@@ -174,7 +189,3 @@ cd Fail2banSetup && git pull
 # 安装后清理（可选）
 cd .. && rm -rf Fail2banSetup
 ```
-
-
-
-
