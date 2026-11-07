@@ -342,6 +342,7 @@ f2b - Fail2Ban 快捷命令 (fail2ban-client 封装)
   f2b set recidive unbanip <IP>     手动解封 IP（累犯监狱）
 
 【白名单管理】
+  f2b whitelist                   查看当前白名单
   f2b whitelist <IP>              将 IP 加入白名单（永不封禁）
   f2b unwhitelist <IP>            将 IP 从白名单移除
   (也可用 f2b ignore / f2b unignore 别名)
@@ -398,13 +399,20 @@ validate_ip() {
 
 # 白名单管理: 添加可信 IP 到 ignoreip
 if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
+    IP="$2"
+    # 无参数时显示当前白名单
+    if [ -z "$IP" ]; then
+        if [ ! -f /etc/fail2ban/jail.local ]; then
+            echo "f2b: 配置文件 /etc/fail2ban/jail.local 不存在" >&2
+            exit 1
+        fi
+        echo "f2b: 当前白名单:"
+        grep "^ignoreip =" /etc/fail2ban/jail.local | sed 's/^ignoreip = //' | tr ' ' '\n' | sed '/^$/d' | sed 's/^/  /'
+        exit 0
+    fi
+    # 有参数时需要 root 权限
     if [ $EUID -ne 0 ]; then
         echo "f2b: 白名单管理需要 root 权限" >&2
-        exit 1
-    fi
-    IP="$2"
-    if [ -z "$IP" ]; then
-        echo "用法: f2b whitelist <IP>    示例: f2b whitelist 192.168.1.100" >&2
         exit 1
     fi
     if ! validate_ip "$IP"; then

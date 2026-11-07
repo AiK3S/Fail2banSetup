@@ -209,6 +209,7 @@ f2b set recidive unbanip 1.2.3.4 # 手动解封 IP（累犯监狱）
 白名单中的 IP 永远不会被封禁。命令直接修改 `/etc/fail2ban/jail.local` 中的 `ignoreip` 并自动 reload。
 
 ```bash
+f2b whitelist                   # 查看当前白名单
 f2b whitelist 192.168.1.100      # 加入白名单
 f2b unwhitelist 192.168.1.100    # 移出白名单
 
