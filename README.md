@@ -13,6 +13,7 @@
 - [快速开始](#快速开始)
 - [命令行参数](#命令行参数)
 - [默认策略](#默认策略)
+- [UFW 防火墙](#ufw-防火墙)
 - [f2b 快捷命令](#f2b-快捷命令)
   - [状态查看](#状态查看)
   - [封禁管理](#封禁管理)
@@ -36,7 +37,7 @@
 - **白名单管理** — `f2b whitelist/unwhitelist <IP>` 命令直接增删可信 IP，自动 reload
 - **一键更新** — `f2b update` 检查 GitHub 远程仓库，自动拉取并用原参数重新安装
 - **f2b 快捷命令** — 封装 `fail2ban-client`，无参数时显示交互式帮助，有参数时透明转发
-- **可选 UFW 集成** — 通过 UFW 防火墙执行封禁动作
+- **UFW 防火墙集成** — 自动安装配置 UFW、放行 SSH 端口、安装自动恢复钩子
 - **配置校验** — 安装时自动校验语法，避免坏配置导致服务启动失败
 - **自动备份** — 发现已有配置时自动备份再覆盖
 
@@ -49,7 +50,7 @@
 | 操作系统 | Debian / Ubuntu（需 apt 包管理器） |
 | 权限 | root 或 sudo |
 | 依赖 | apt、systemd |
-| 可选 | UFW（使用 `-u` 参数时需要） |
+| 可选 | UFW（默认自动安装配置，`--no-ufw` 可跳过） |
 
 ---
 
@@ -78,7 +79,13 @@ sudo ./install.sh -p 52222 -t "192.168.1.100 10.0.0.1"
 ### 完整参数示例
 
 ```bash
-sudo ./install.sh -p 22222 -t "192.168.1.100" -b 2d -f 10m -m 5 -u
+sudo ./install.sh -p 22222 -t "192.168.1.100" -b 2d -f 10m -m 5
+```
+
+### 不使用 UFW（已自行管理防火墙）
+
+```bash
+sudo ./install.sh -p 22222 --no-ufw
 ```
 
 > 安装完成后，输入 `f2b` 即可查看所有可用命令。
@@ -94,7 +101,8 @@ sudo ./install.sh -p 22222 -t "192.168.1.100" -b 2d -f 10m -m 5 -u
 | `-b` | `--bantime` | 默认封禁时长 | `1d` |
 | `-f` | `--findtime` | 查找时间窗口 | `2m` |
 | `-m` | `--maxretry` | 最大重试次数 | `3` |
-| `-u` | `--use-ufw` | 启用 UFW 集成 | 否 |
+| `-u` | `--use-ufw` | Fail2Ban 通过 UFW 封禁（ufw status 可见封禁规则） | 否 |
+| | `--no-ufw` | 不设置 UFW 防火墙（已自行管理防火墙时使用） | 否 |
 | `-h` | `--help` | 显示帮助信息 | — |
 
 **时间单位**：`s`（秒）、`m`（分钟）、`h`（小时）、`d`（天）、`w`（周）
@@ -112,6 +120,57 @@ sudo ./install.sh -p 22222 -t "192.168.1.100" -b 2d -f 10m -m 5 -u
 
 - **sshd** 使用 `aggressive` 模式，能识别更多类型的攻击模式
 - **recidive** 监控 Fail2Ban 自身日志，1 天内被封 3 次的 IP 将被封禁 2 周（所有端口）
+
+---
+
+## UFW 防火墙
+
+脚本默认自动安装并配置 UFW 防火墙，放行 SSH 端口，并安装自动恢复钩子。
+
+### 三种模式
+
+| 模式 | 命令 | UFW 防火墙 | Fail2Ban 封禁方式 | 自动恢复钩子 | 适用场景 |
+|------|------|-----------|-------------------|-------------|----------|
+| **默认** | `sudo ./install.sh` | ✅ 自动设置 | iptables 独立链 | ✅ 安装 | 日常使用（推荐） |
+| **UFW 封禁** | `sudo ./install.sh -u` | ✅ 自动设置 | 通过 UFW 封禁 | ❌ 不需要 | 希望 `ufw status` 看到封禁 |
+| **不用 UFW** | `sudo ./install.sh --no-ufw` | ❌ 跳过 | iptables 独立链 | ❌ 跳过 | 已自行管理防火墙 |
+
+### 默认模式工作原理
+
+```
+安装时:
+  ① 自动安装 UFW（如未安装）
+  ② ufw allow <SSH端口>/tcp comment "ssh"  （放行 SSH，防止锁死）
+  ③ ufw --force enable（启用防火墙）
+  ④ 安装 /etc/ufw/after.init 钩子
+  ⑤ Fail2Ban 用自己的 iptables 链（f2b-sshd）封禁，不经过 UFW
+```
+
+日常使用时:
+```
+ufw allow 80/tcp
+  → UFW reload iptables（f2b-sshd 链被刷掉）
+  → after.init 钩子触发
+  → systemctl restart fail2ban
+  → Fail2Ban 重新插入 f2b-sshd 链 + 所有封禁规则
+  → 封禁恢复
+```
+
+### 为什么不直接用 UFW 封禁？
+
+如果 Fail2Ban 通过 UFW 封禁（`-u` 模式），每个被封 IP 都会在 `ufw status` 中显示为一条 DENY 规则。封禁 IP 多了会挤占你自己的放行规则，`ufw status` 变得难以阅读。
+
+默认模式下 Fail2Ban 用自己的 iptables 链封禁，`ufw status` 保持干净，只显示你自己的规则。配合 after.init 钩子，`ufw allow/reload` 后封禁自动恢复。
+
+### 查看封禁列表
+
+默认模式下 `ufw status` 不显示封禁（Fail2Ban 用独立 iptables 链），用以下命令查看：
+
+```bash
+f2b status sshd                # 查看封禁概览
+f2b get sshd banned            # 查看被封 IP 列表
+sudo iptables -L f2b-sshd -n   # 直接看 iptables 链
+```
 
 ---
 
@@ -187,6 +246,10 @@ sudo f2b update
 > git checkout -- install.sh   # 丢弃本地修改
 > sudo f2b update              # 重新更新
 > ```
+
+> ⚠️ **安全提示**：`f2b update` 会从 GitHub 拉取代码并直接执行 `install.sh`。
+> 如果仓库被攻击者接管（如账号被盗），此命令将成为远程代码执行路径。
+> 请仅在信任仓库所有者的前提下使用此功能，建议定期关注仓库动态。
 
 ### 配置与服务
 
@@ -278,6 +341,9 @@ apt remove --purge fail2ban
 # 删除快捷命令
 rm -f /usr/local/bin/f2b
 
+# 删除 UFW 自动恢复钩子（如已安装）
+sed -i '/# BEGIN Fail2Ban 自动恢复钩子/,/# END Fail2Ban 自动恢复钩子/d' /etc/ufw/after.init 2>/dev/null
+
 # 删除配置（可选）
 rm -rf /etc/fail2ban
 ```
@@ -300,6 +366,7 @@ Fail2banSetup/
 /usr/local/bin/f2b                    # f2b 快捷命令
 /etc/fail2ban/jail.local              # Fail2Ban 配置
 /etc/fail2ban/f2b.install_args        # 安装参数（供 f2b update 使用）
+/etc/ufw/after.init                   # UFW 自动恢复钩子（默认模式安装）
 ```
 
 ---
@@ -307,11 +374,17 @@ Fail2banSetup/
 ## 安全设计
 
 - **输入校验**：所有用户输入（IP、端口、时间、重试次数）均经过正则格式校验，非法输入直接拒绝
+- **白名单 IP 校验**：`f2b whitelist/unwhitelist` 命令同样校验 IP 格式（IPv4/IPv6/CIDR），非法输入直接拒绝
 - **注入防护**：可信 IP 列表禁止换行符，防止 heredoc delimiter 注入
 - **通配符防护**：校验 IP 时禁用 glob 展开，防止 `*` `?` 匹配文件名
+- **整词匹配**：白名单移除使用 awk 精确匹配整词，避免 sed 子串误匹配（如 `1.2.3.4` 误删 `1.2.3.40`）
+- **参数安全传递**：安装参数以 null 分隔存储，通过 bash 数组传递，避免 `eval` 执行
+- **路径安全**：`REPO_DIR` 使用 `printf %q` 转义，防止路径中的 shell 元字符注入
 - **配置校验**：安装时自动运行 `fail2ban-client -t` 校验语法，校验失败则不重启服务
 - **权限检查**：白名单管理与更新命令检查 root 权限，非 root 运行时拒绝并提示
 - **reload 检查**：白名单操作后检查 `fail2ban-client reload` 退出码，失败时报错
+- **UFW 安全**：放行 SSH 端口在启用 UFW 之前完成，防止锁死；`ufw --force enable` 跳过交互提示
+- **UFW 自动恢复钩子**：`/etc/ufw/after.init` 在 UFW 操作后自动重启 Fail2Ban，恢复被刷掉的 iptables 封禁规则；钩子有标记检测，重复安装不会重复写入
 
 ---
 

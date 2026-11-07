@@ -145,7 +145,8 @@ show_help() {
     -b, --bantime TIME      默认封禁时长 (默认: 1d)
     -f, --findtime TIME     查找时间窗口 (默认: 2m)
     -m, --maxretry NUM      最大重试次数 (默认: 3)
-    -u, --use-ufw           启用 UFW 集成
+    -u, --use-ufw           Fail2Ban 通过 UFW 封禁（ufw status 可见封禁规则）
+        --no-ufw            不设置 UFW 防火墙（已自行管理防火墙时使用）
     -h, --help              显示此帮助信息
 
 时间单位: s(秒) m(分钟) h(小时) d(天) w(周)
@@ -169,6 +170,7 @@ BANTIME="1d"
 FINDTIME="2m"
 MAXRETRY="3"
 USE_UFW="false"
+SETUP_UFW="true"
 
 # 默认忽略的 IP（始终包含）
 DEFAULT_IGNORE_IPS="127.0.0.1/8 ::1"
@@ -190,6 +192,7 @@ parse_args() {
             -f|--findtime)      require_arg "$1" "$2"; FINDTIME="$2"; shift 2 ;;
             -m|--maxretry)      require_arg "$1" "$2"; MAXRETRY="$2"; shift 2 ;;
             -u|--use-ufw)       USE_UFW="true"; shift ;;
+            --no-ufw)           SETUP_UFW="false"; USE_UFW="false"; shift ;;
             -h|--help)          show_help; exit 0 ;;
             *)                  print_error "未知选项: $1"; show_help; exit 1 ;;
         esac
@@ -208,14 +211,71 @@ build_ignore_ips() {
 # 安装与配置
 # ----------------------------------------------------------------------------
 
-check_ufw() {
-    if [ "$USE_UFW" = "true" ]; then
-        if ! command -v ufw &> /dev/null; then
-            print_error "已启用 UFW 集成 (-u)，但系统未安装 UFW"
-            print_info "请先安装: apt install ufw"
-            exit 1
-        fi
+ensure_ufw() {
+    if [ "$SETUP_UFW" = "false" ]; then
+        return 0
     fi
+
+    # ① 检查是否安装 UFW，未安装则自动安装
+    if ! command -v ufw &> /dev/null; then
+        print_info "UFW 未安装，正在自动安装..."
+        apt install -y ufw
+        print_success "UFW 安装完成"
+    fi
+
+    # ② 放行 SSH 端口（在启用 UFW 之前，防止锁死自己）
+    print_info "放行 SSH 端口 ${SSH_PORT}/tcp..."
+    ufw allow "${SSH_PORT}/tcp" comment "ssh"
+
+    # ③ 检查 UFW 是否已启用，未启用则启用
+    if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+        print_info "启用 UFW 防火墙..."
+        ufw --force enable
+    fi
+
+    # ④ 验证 UFW 确已启用
+    if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+        print_error "UFW 启用失败，请手动检查"
+        exit 1
+    fi
+
+    print_success "UFW 已就绪"
+}
+
+install_ufw_hook() {
+    # 只在「设置了 UFW 防火墙」且「Fail2Ban 不通过 UFW 封禁」时才需要钩子
+    # （USE_UFW=true 时封禁走 UFW，不会被 ufw reload 冲掉，不需要钩子）
+    if [ "$SETUP_UFW" = "false" ]; then
+        return 0
+    fi
+    if [ "$USE_UFW" = "true" ]; then
+        return 0
+    fi
+
+    local hook_file="/etc/ufw/after.init"
+    local marker="# BEGIN Fail2Ban 自动恢复钩子"
+
+    # 如果已有钩子，跳过
+    if [ -f "$hook_file" ] && grep -q "$marker" "$hook_file" 2>/dev/null; then
+        print_info "UFW 自动恢复钩子已存在，跳过"
+        return 0
+    fi
+
+    # 写入钩子（追加重复执行不会重复添加）
+    cat >> "$hook_file" << 'UFW_HOOK'
+
+# BEGIN Fail2Ban 自动恢复钩子（Fail2banSetup）
+# UFW 操作后自动重启 Fail2Ban，恢复被 ufw reload 刷掉的 iptables 封禁规则
+case "$1" in
+    post-start|force-reload)
+        systemctl restart fail2ban 2>/dev/null || true
+        ;;
+esac
+# END Fail2Ban 自动恢复钩子（Fail2banSetup）
+UFW_HOOK
+
+    chmod +x "$hook_file"
+    print_success "UFW 自动恢复钩子已安装（/etc/ufw/after.init）"
 }
 
 install_fail2ban() {
@@ -247,14 +307,16 @@ setup_f2b_alias() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    # 写入脚本头部（含仓库路径，需要变量展开）
-    cat > "$f2b_path" << F2B_HEADER
+    # 写入脚本头部（引号 delimiter，不做变量展开）
+    cat > "$f2b_path" << 'F2B_HEADER'
 #!/bin/bash
 # f2b - fail2ban-client 快捷封装
 # 无参数调用时显示简介与命令列表，否则透传给 fail2ban-client
 # 源码仓库路径（由 install.sh 写入，供 f2b update 使用）
-REPO_DIR="${script_dir}"
 F2B_HEADER
+
+    # 安全写入 REPO_DIR（printf %q 转义路径中的特殊字符，防止 shell 元字符注入）
+    printf 'REPO_DIR=%q\n' "$script_dir" >> "$f2b_path"
 
     # 写入脚本主体（引号 delimiter，不做变量展开）
     cat >> "$f2b_path" << 'F2B_SCRIPT'
@@ -307,6 +369,33 @@ F2B_HELP
     exit 0
 fi
 
+# --- IP 格式校验（防止注入 sed/配置文件） ---
+validate_ip() {
+    local ip="$1"
+    # IPv4 或 IPv4/CIDR
+    if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(/([0-9]{1,2}))?$ ]]; then
+        local o1="${BASH_REMATCH[1]}" o2="${BASH_REMATCH[2]}"
+        local o3="${BASH_REMATCH[3]}" o4="${BASH_REMATCH[4]}"
+        local cidr="${BASH_REMATCH[6]}"
+        for o in "$o1" "$o2" "$o3" "$o4"; do
+            [ "$o" -gt 255 ] && return 1
+        done
+        if [ -n "$cidr" ] && [ "$cidr" -gt 32 ]; then
+            return 1
+        fi
+        return 0
+    fi
+    # IPv6 或 IPv6/CIDR（基本校验：十六进制+冒号，可选 /前缀长度）
+    if [[ "$ip" =~ ^[0-9a-fA-F:]+(/([0-9]{1,3}))?$ ]] && [[ "$ip" == *:* ]]; then
+        if [[ "$ip" == */* ]]; then
+            local v6cidr="${ip#*/}"
+            [ "$v6cidr" -gt 128 ] && return 1
+        fi
+        return 0
+    fi
+    return 1
+}
+
 # 白名单管理: 添加可信 IP 到 ignoreip
 if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
     if [ $EUID -ne 0 ]; then
@@ -316,6 +405,10 @@ if [ "$1" = "whitelist" ] || [ "$1" = "ignore" ]; then
     IP="$2"
     if [ -z "$IP" ]; then
         echo "用法: f2b whitelist <IP>    示例: f2b whitelist 192.168.1.100" >&2
+        exit 1
+    fi
+    if ! validate_ip "$IP"; then
+        echo "f2b: 无效的 IP 地址: '${IP}'" >&2
         exit 1
     fi
     if [ ! -f /etc/fail2ban/jail.local ]; then
@@ -346,6 +439,10 @@ if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
         echo "用法: f2b unwhitelist <IP>  示例: f2b unwhitelist 192.168.1.100" >&2
         exit 1
     fi
+    if ! validate_ip "$IP"; then
+        echo "f2b: 无效的 IP 地址: '${IP}'" >&2
+        exit 1
+    fi
     if [ ! -f /etc/fail2ban/jail.local ]; then
         echo "f2b: 配置文件 /etc/fail2ban/jail.local 不存在" >&2
         exit 1
@@ -354,7 +451,18 @@ if [ "$1" = "unwhitelist" ] || [ "$1" = "unignore" ]; then
         echo "f2b: ${IP} 不在白名单中"
         exit 0
     fi
-    sed -i "/^ignoreip =/ s| ${IP}||" /etc/fail2ban/jail.local
+    # 使用 awk 精确匹配整词删除，避免 sed 子串误匹配（如 1.2.3.4 误删 1.2.3.40 的子串）
+    awk -v ip="$IP" '
+    /^ignoreip =/ {
+        out = $1
+        for (i = 2; i <= NF; i++) {
+            if ($i != ip) out = out " " $i
+        }
+        print out
+        next
+    }
+    {print}
+    ' /etc/fail2ban/jail.local > /etc/fail2ban/jail.local.tmp && mv /etc/fail2ban/jail.local.tmp /etc/fail2ban/jail.local
     if ! fail2ban-client reload 2>&1; then
         echo "f2b: reload 失败，配置已修改但未生效，请检查" >&2
         exit 1
@@ -406,14 +514,14 @@ if [ "$1" = "update" ]; then
         fi
     fi
     echo "f2b: 代码已更新，正在重新安装..."
-    INSTALL_ARGS=""
+    INSTALL_ARGS=()
     if [ -f /etc/fail2ban/f2b.install_args ]; then
-        INSTALL_ARGS=$(cat /etc/fail2ban/f2b.install_args)
+        mapfile -d '' -t INSTALL_ARGS < /etc/fail2ban/f2b.install_args
     fi
-    if [ -n "$INSTALL_ARGS" ]; then
-        echo "f2b: 使用上次的安装参数: $INSTALL_ARGS"
+    if [ ${#INSTALL_ARGS[@]} -gt 0 ]; then
+        echo "f2b: 使用上次的安装参数: ${INSTALL_ARGS[*]}"
     fi
-    if ! eval "bash ./install.sh $INSTALL_ARGS"; then
+    if ! bash ./install.sh "${INSTALL_ARGS[@]}"; then
         echo "f2b: 重新安装失败，请检查错误信息" >&2
         exit 1
     fi
@@ -546,6 +654,12 @@ show_summary() {
     echo "  - 时间窗口: ${FINDTIME}"
     echo "  - 重试次数: ${MAXRETRY}"
     echo "  - UFW 集成: ${USE_UFW}"
+    if [ "$SETUP_UFW" = "true" ]; then
+        echo "  - UFW 防火墙: 已启用"
+        if [ "$USE_UFW" = "false" ]; then
+            echo "  - UFW 自动恢复钩子: 已安装"
+        fi
+    fi
     echo ""
     echo "常用命令 (f2b = fail2ban-client):"
     echo "  查看所有命令:  f2b"
@@ -574,22 +688,25 @@ main() {
     check_root
     check_os
 
-    # 保存原始参数供 f2b update 使用
-    SAVED_ARGS=$(printf '%q ' "$@")
-
     parse_args "$@"
     validate_port
     validate_time "封禁时长" "$BANTIME"
     validate_time "查找时间窗口" "$FINDTIME"
     validate_positive_int "最大重试次数" "$MAXRETRY"
     validate_trusted_ips
-    check_ufw
     build_ignore_ips
 
     print_info "配置预览:"
     echo "  - SSH 端口: ${SSH_PORT}"
     echo "  - 可信 IP: ${IGNORE_IPS}"
     echo "  - 封禁时长: ${BANTIME}"
+    echo "  - UFW 集成: ${USE_UFW}"
+    if [ "$SETUP_UFW" = "true" ]; then
+        echo "  - UFW 将自动放行 SSH 端口 ${SSH_PORT} 并启用"
+        if [ "$USE_UFW" = "false" ]; then
+            echo "  - UFW 自动恢复钩子: ufw 操作后自动重启 Fail2Ban 恢复封禁"
+        fi
+    fi
     echo ""
 
     # || true 防止 Ctrl+D (EOF) 导致 set -e 异常退出
@@ -599,11 +716,13 @@ main() {
         exit 0
     fi
 
+    ensure_ufw
     install_fail2ban
+    install_ufw_hook
     setup_f2b_alias
 
-    # 保存安装参数供 f2b update 使用
-    printf '%s\n' "$SAVED_ARGS" > /etc/fail2ban/f2b.install_args
+    # 保存安装参数供 f2b update 使用（null 分隔，避免 eval）
+    printf '%s\0' "$@" > /etc/fail2ban/f2b.install_args
 
     backup_config
     generate_config
